@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pimtris</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: black;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: Arial, sans-serif;
+            color: white;
+            overflow: hidden;
+        }
+        #gameContainer {
+            display: flex;
+            align-items: flex-start;
+        }
+        #sidebar {
+            margin-right: 20px;
+            text-align: center;
+        }
+        #gameTitle {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+        #score, #level, #highScore {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+        #gameCanvas {
+            border: 2px solid white;
+        }
+        #starCanvas {
+            position: absolute;
+            z-index: -1;
+        }
+        #gameOver {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            display: none;
+        }
+        #restartButton {
+            margin-top: 20px;
+            padding: 10px 20px;
+            font-size: 18px;
+            cursor: pointer;
+        }
+        #controls {
+            margin-top: 20px;
+            font-size: 16px;
+            text-align: left;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <div id="sidebar">
+            <div id="gameTitle">Pimtris</div>
+            <div id="score">Score: 0</div>
+            <div id="level">Level: 1</div>
+            <div id="highScore">High Score: 0</div>
+            <div id="controls">
+                Controls:<br>
+                ← → : Move<br>
+                ↑ : Rotate<br>
+                ↓ : Speed up<br>
+                Space : Hard drop
+            </div>
+        </div>
+        <canvas id="gameCanvas" width="400" height="800"></canvas>
+    </div>
+    <canvas id="starCanvas"></canvas>
+    <div id="gameOver">
+        <h2>Game Over!</h2>
+        <p>Your score: <span id="finalScore"></span></p>
+        <p>Level reached: <span id="finalLevel"></span></p>
+        <p>High Score: <span id="finalHighScore"></span></p>
+        <button id="restartButton">Restart Game</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const starCanvas = document.getElementById('starCanvas');
+        const starCtx = starCanvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const levelElement = document.getElementById('level');
+        const highScoreElement = document.getElementById('highScore');
+        const gameOverElement = document.getElementById('gameOver');
+        const finalScoreElement = document.getElementById('finalScore');
+        const finalLevelElement = document.getElementById('finalLevel');
+        const finalHighScoreElement = document.getElementById('finalHighScore');
+        const restartButton = document.getElementById('restartButton');
+
+        const ROWS = 20;
+        const COLS = 10;
+        const BLOCK_SIZE = 40;
+
+        starCanvas.width = window.innerWidth;
+        starCanvas.height = window.innerHeight;
+
+        let board = Array(ROWS).fill().map(() => Array(COLS).fill(0));
+        let currentPiece = null;
+        let score = 0;
+        let highScore = 0;
+        let level = 1;
+        let totalRowsCleared = 0;
+        let dropCounter = 0;
+        let dropInterval = 1000;
+        let fastDropInterval = 50;
+        let lastTime = 0;
+        let gameActive = true;
+        let isFastDropping = false;
+
+        // Try to load high score from localStorage, fallback to 0 if not available
+        try {
+            highScore = parseInt(localStorage.getItem('pimtrisHighScore')) || 0;
+        } catch (e) {
+            console.log('localStorage not available, using session-based high score');
+        }
+
+        updateHighScoreDisplay();
+
+        const SHAPES = [
+            {shape: [[1, 1, 1, 1]], color: '#00FFFF'}, // I piece (Cyan)
+            {shape: [[1, 1], [1, 1]], color: '#FFFF00'}, // O piece (Yellow)
+            {shape: [[1, 1, 1], [0, 1, 0]], color: '#800080'}, // T piece (Purple)
+            {shape: [[1, 1, 1], [1, 0, 0]], color: '#0000FF'}, // L piece (Blue)
+            {shape: [[1, 1, 1], [0, 0, 1]], color: '#FFA500'}, // J piece (Orange)
+            {shape: [[1, 1, 0], [0, 1, 1]], color: '#00FF00'}, // S piece (Green)
+            {shape: [[0, 1, 1], [1, 1, 0]], color: '#FF0000'}  // Z piece (Red)
+        ];
+
+        class Piece {
+            constructor(shape, color) {
+                this.shape = shape;
+                this.color = color;
+                this.y = 0;
+                this.x = Math.floor(COLS / 2) - Math.floor(shape[0].length / 2);
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                this.shape.forEach((row, y) => {
+                    row.forEach((value, x) => {
+                        if (value) {
+                            ctx.fillRect((this.x + x) * BLOCK_SIZE, (this.y + y) * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+                            ctx.strokeRect((this.x + x) * BLOCK_SIZE, (this.y + y) * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+                        }
+                    });
+                });
+            }
+
+            move(dx, dy) {
+                this.x += dx;
+                this.y += dy;
+                if (this.collision()) {
+                    this.x -= dx;
+                    this.y -= dy;
+                    return false;
+                }
+                return true;
+            }
+
+            collision() {
+                return this.shape.some((row, y) => 
+                    row.some((value, x) => 
+                        value && (
+                            this.x + x < 0 ||
+                            this.x + x >= COLS ||
+                            this.y + y >= ROWS ||
+                            board[this.y + y]?.[this.x + x]
+                        )
+                    )
+                );
+            }
+
+            rotate() {
+                const rotated = this.shape[0].map((_, i) => 
+                    this.shape.map(row => row[i]).reverse()
+                );
+                const originalShape = this.shape;
+                this.shape = rotated;
+                if (this.collision()) {
+                    this.shape = originalShape;
+                }
+            }
+
+            hardDrop() {
+                while (this.move(0, 1)) {}
+                this.lock();
+            }
+
+            lock() {
+                this.shape.forEach((row, y) => {
+                    row.forEach((value, x) => {
+                        if (value) {
+                            board[this.y + y][this.x + x] = this.color;
+                        }
+                    });
+                });
+                clearRows();
+                currentPiece = createPiece();
+                if (currentPiece.collision()) {
+                    gameActive = false;
+                    showGameOver();
+                }
+            }
+        }
+
+        function createPiece() {
+            const pieceIndex = Math.floor(Math.random() * SHAPES.length);
+            return new Piece(SHAPES[pieceIndex].shape, SHAPES[pieceIndex].color);
+        }
+
+        function drawBoard() {
+            board.forEach((row, y) => {
+                row.forEach((color, x) => {
+                    if (color) {
+                        ctx.fillStyle = color;
+                        ctx.fillRect(x * BLOCK_SIZE, y * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+                        ctx.strokeRect(x * BLOCK_SIZE, y * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+                    }
+                });
+            });
+        }
+
+        function clearRows() {
+            let rowsCleared = 0;
+            for (let y = ROWS - 1; y >= 0; y--) {
+                if (board[y].every(cell => cell !== 0)) {
+                    board.splice(y, 1);
+                    board.unshift(Array(COLS).fill(0));
+                    rowsCleared++;
+                    y++; // Check the same row again, as it's now a different row
+                }
+            }
+            if (rowsCleared > 0) {
+                score += calculateScore(rowsCleared);
+                totalRowsCleared += rowsCleared;
+                scoreElement.textContent = `Score: ${score}`;
+                updateLevel();
+                updateHighScore();
+            }
+        }
+
+        function updateLevel() {
+            const newLevel = Math.floor(totalRowsCleared / 10) + 1;
+            if (newLevel > level) {
+                level = newLevel;
+                levelElement.textContent = `Level: ${level}`;
+                dropInterval = Math.max(100, 1000 - (level - 1) * 100); // Speed up, but not faster than 100ms
+            }
+        }
+
+        function calculateScore(rowsCleared) {
+            const basePoints = 10;
+            switch(rowsCleared) {
+                case 1:
+                    return basePoints * level;
+                case 2:
+                    return basePoints * 3 * level;
+                case 3:
+                    return basePoints * 5 * level;
+                case 4:
+                    return basePoints * 8 * level;
+                default:
+                    return 0;
+            }
+        }
+
+        function updateHighScore() {
+            if (score > highScore) {
+                highScore = score;
+                try {
+                    localStorage.setItem('pimtrisHighScore', highScore);
+                } catch (e) {
+                    console.log('Unable to save high score to localStorage');
+                }
+                updateHighScoreDisplay();
+            }
+        }
+
+        function updateHighScoreDisplay() {
+            highScoreElement.textContent = `High Score: ${highScore}`;
+        }
+
+        function createStars() {
+            const stars = [];
+            for (let i = 0; i < 100; i++) {
+                stars.push({
+                    x: Math.random() * starCanvas.width,
+                    y: Math.random() * starCanvas.height,
+                    size: Math.random() * 2 + 1,
+                    speed: Math.random() * 0.5 + 0.1
+                });
+            }
+            return stars;
+        }
+
+        function drawStars(stars) {
+            starCtx.clearRect(0, 0, starCanvas.width, starCanvas.height);
+            starCtx.fillStyle = 'white';
+            stars.forEach(star => {
+                starCtx.beginPath();
+                starCtx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+                starCtx.fill();
+            });
+        }
+
+        function updateStars(stars) {
+            stars.forEach(star => {
+                star.y += star.speed;
+                if (star.y > starCanvas.height) {
+                    star.y = 0;
+                    star.x = Math.random() * starCanvas.width;
+                }
+            });
+        }
+
+        const stars = createStars();
+
+        function update(time = 0) {
+            if (!gameActive) return;
+
+            const deltaTime = time - lastTime;
+            lastTime = time;
+
+            dropCounter += deltaTime;
+            if (dropCounter > (isFastDropping ? fastDropInterval : dropInterval)) {
+                softDrop();
+            }
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            updateStars(stars);
+            drawStars(stars);
+            drawBoard();
+
+            if (currentPiece) {
+                currentPiece.draw();
+            }
+
+            requestAnimationFrame(update);
+        }
+
+        function softDrop() {
+            if (currentPiece) {
+                if (!currentPiece.move(0, 1)) {
+                    currentPiece.lock();
+                }
+            } else {
+                currentPiece = createPiece();
+                if (currentPiece.collision()) {
+                    gameActive = false;
+                    showGameOver();
+                }
+            }
+            dropCounter = 0;
+        }
+
+        function showGameOver() {
+            gameOverElement.style.display = 'block';
+            finalScoreElement.textContent = score;
+            finalLevelElement.textContent = level;
+            finalHighScoreElement.textContent = highScore;
+        }
+
+        function restartGame() {
+            board = Array(ROWS).fill().map(() => Array(COLS).fill(0));
+            score = 0;
+            level = 1;
+            totalRowsCleared = 0;
+            dropInterval = 1000;
+            scoreElement.textContent = 'Score: 0';
+            levelElement.textContent = 'Level: 1';
+            updateHighScoreDisplay();
+            gameOverElement.style.display = 'none';
+            gameActive = true;
+            currentPiece = null;
+            isFastDropping = false;
+            update();
+        }
+
+        // Prevent default behavior for arrow keys and spacebar
+        window.addEventListener("keydown", function(e) {
+            if(["Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].indexOf(e.code) > -1) {
+                e.preventDefault();
+            }
+        }, false);
+
+        document.addEventListener('keydown', event => {
+            if (!gameActive || !currentPiece) return;
+
+            switch (event.key) {
+                case 'ArrowLeft':
+                    currentPiece.move(-1, 0);
+                    break;
+                case 'ArrowRight':
+                    currentPiece.move(1, 0);
+                    break;
+                case 'ArrowDown':
+                    isFastDropping = true;
+                    break;
+                case 'ArrowUp':
+                    currentPiece.rotate();
+                    break;
+                case ' ':
+                    currentPiece.hardDrop();
+                    break;
+            }
+        });
+
+        document.addEventListener('keyup', event => {
+            if (event.key === 'ArrowDown') {
+                isFastDropping = false;
+            }
+        });
+
+        restartButton.addEventListener('click', restartGame);
+
+        currentPiece = createPiece();
+        update();
+    </script>
+</body>
